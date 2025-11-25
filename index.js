@@ -1,3 +1,70 @@
+const express = require("express");
+const fetch = require("node-fetch");
+const app = express();
+
+app.use(express.json());
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
+  next();
+});
+
+// Health check
+app.get("/", (req, res) => {
+  res.json({ status: "Donation Proxy Running!", time: new Date().toISOString() });
+});
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Get user ID from username
+app.get("/userid/:username", async (req, res) => {
+  try {
+    const username = req.params.username;
+    const response = await fetch("https://users.roproxy.com/v1/usernames/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ usernames: [username], excludeBannedUsers: true }),
+    });
+
+    const data = await response.json();
+
+    if (data.data && data.data.length > 0) {
+      res.json({
+        success: true,
+        userId: data.data[0].id,
+        username: data.data[0].name,
+      });
+    } else {
+      res.json({ success: false, error: "User not found" });
+    }
+  } catch (error) {
+    console.error("Error fetching user:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch user" });
+  }
+});
+
+// Get user info by ID
+app.get("/userinfo/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const response = await fetch(`https://users.roproxy.com/v1/users/${userId}`);
+    const data = await response.json();
+    if (data.id) {
+      res.json({
+        success: true,
+        userId: data.id,
+        username: data.name,
+        displayName: data.displayName,
+      });
+    } else {
+      res.json({ success: false, error: "User not found" });
+    }
+  } catch (error) {
+    console.error("Error fetching user info:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch user info" });
+  }
+});
+
 // ============================================
 // MAIN DONATIONS ENDPOINT (FIXED)
 // ============================================
@@ -55,12 +122,11 @@ app.get("/donations/:userId", async (req, res) => {
                   isForSale: priceData.IsForSale,
                 });
 
-                // BASIC CHECK: must be for sale and have a price
+                // Must be for sale and have a price
                 price = priceData.PriceInRobux;
                 isForSale = priceData.IsForSale === true;
 
                 // OPTIONAL SAFETY: ensure the creator matches the user
-                // (use != so "123" and 123 are treated the same)
                 if (creatorId != userId) {
                   console.log(
                     `Skipping pass ${passId} because creatorId != userId`,
@@ -101,7 +167,7 @@ app.get("/donations/:userId", async (req, res) => {
     }
 
     // ----------------------------------------
-    // STEP 2: T-Shirts (unchanged)
+    // STEP 2: T-Shirts
     // ----------------------------------------
     try {
       const catalogUrl = `https://catalog.roproxy.com/v1/search/items?category=Clothing&subcategory=ClassicTShirts&creatorTargetId=${userId}&creatorType=User&limit=60&sortOrder=Desc&sortType=Updated`;
@@ -172,8 +238,21 @@ app.get("/donations/:userId", async (req, res) => {
     });
   } catch (error) {
     console.error("Error in donations endpoint:", error);
-    res
-      .status(500)
-      .json({ success: false, error: "Failed to fetch donation items" });
+    res.status(500).json({ success: false, error: "Failed to fetch donation items" });
   }
 });
+
+// Debug endpoint
+app.get("/debug/:userId", async (req, res) => {
+  const url = `https://apis.roproxy.com/game-passes/v1/users/${req.params.userId}/game-passes?count=100`;
+  try {
+    const r = await fetch(url);
+    const text = await r.text();
+    res.send(`Status: ${r.status}\nBody: ${text}`);
+  } catch (e) {
+    res.send(`Error: ${e.message}`);
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Donation Proxy running on port ${PORT}`));
