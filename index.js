@@ -1,6 +1,10 @@
+// ----------------------------------------
+// STEP 1: Get gamepasses the user CREATED
+// using inventory/list-json (assetTypeId=34)
+// ----------------------------------------
 try {
   let pageNumber = 1;
-  const maxPages = 10;
+  const maxPages = 10; // safety cap
   let keepGoing = true;
 
   while (keepGoing && pageNumber <= maxPages) {
@@ -32,17 +36,21 @@ try {
     const items = data.Data.Items;
     console.log(`Page ${pageNumber} has ${items.length} items`);
 
+    // If no items, we're probably at the end
     if (items.length === 0) {
       keepGoing = false;
       break;
     }
 
     for (const item of items) {
+      // DevForum logic: only include passes where Creator.Id == userId
       const creatorId = item.Creator?.Id;
-      if (Number(creatorId) !== Number(userId)) continue;
+      if (creatorId !== userId) continue;
 
       const assetId = item.Item?.AssetId;
       const name = item.Item?.Name || "Gamepass";
+
+      // We still need price + for-sale info; get via product info
       if (!assetId) continue;
 
       try {
@@ -67,9 +75,7 @@ try {
 
         const d = detailsData[0];
         const price = d.price;
-        const isForSale =
-          d.saleLocation === "AllUniverses" ||
-          d.saleLocation === "ExperiencesDevApiOnly";
+        const isForSale = d.saleLocation === "AllUniverses" || d.saleLocation === "ExperiencesDevApiOnly";
 
         if (isForSale && typeof price === "number" && price > 0) {
           allItems.push({
@@ -83,6 +89,7 @@ try {
         console.log("Error fetching details for", assetId, ":", err.message);
       }
 
+      // Tiny delay to be nicer to the API
       await delay(50);
     }
 
