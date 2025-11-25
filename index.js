@@ -16,6 +16,10 @@ app.get("/", (req, res) => {
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// ============================================
+// USER HELPERS
+// ============================================
+
 // Get user ID from username
 app.get("/userid/:username", async (req, res) => {
   try {
@@ -66,7 +70,7 @@ app.get("/userinfo/:userId", async (req, res) => {
 });
 
 // ============================================
-// MAIN DONATIONS ENDPOINT (GAMEPASSES BY USER)
+// DONATIONS BY USER (YOUR ORIGINAL ENDPOINT)
 // ============================================
 app.get("/donations/:userId", async (req, res) => {
   try {
@@ -75,9 +79,6 @@ app.get("/donations/:userId", async (req, res) => {
 
     console.log(`\n=== Fetching donations for user ${userId} ===`);
 
-    // ----------------------------------------
-    // STEP 1: Get gamepasses for the user (using gamePasses array)
-    // ----------------------------------------
     try {
       const url = `https://apis.roproxy.com/game-passes/v1/users/${userId}/game-passes?count=100`;
       console.log(`Fetching gamepasses: ${url}`);
@@ -131,9 +132,6 @@ app.get("/donations/:userId", async (req, res) => {
       console.error("Error fetching gamepasses:", err.message);
     }
 
-    // ----------------------------------------
-    // STEP 2: Cleanup and respond
-    // ----------------------------------------
     const uniqueItems = [];
     const seen = new Set();
     for (const item of allItems) {
@@ -160,6 +158,7 @@ app.get("/donations/:userId", async (req, res) => {
 
 // ============================================
 // DONATIONS BY GAME (UNIVERSE) ID
+// Loosened filters: only require isForSale + price > 0
 // ============================================
 app.get("/donations/game/:universeId", async (req, res) => {
   const universeId = req.params.universeId;
@@ -167,7 +166,7 @@ app.get("/donations/game/:universeId", async (req, res) => {
   try {
     console.log(`\n=== Fetching donations for universe ${universeId} ===`);
 
-    // STEP 1: Get game (universe) info to check the creator
+    // STEP 1: Fetch game info (universe) to log creator, but don't filter on it yet
     const gameInfoUrl = `https://games.roproxy.com/v1/games?universeIds=${universeId}`;
     console.log("Fetching game info:", gameInfoUrl);
 
@@ -198,30 +197,15 @@ app.get("/donations/game/:universeId", async (req, res) => {
     }
 
     const game = gameInfo.data[0];
-    const creator = game.creator;
+    const creator = game.creator; // might be User or Group
     console.log("Game creator:", creator);
-
-    // NOTE:
-    // This block only allows USER-owned games.
-    // If your game is group-owned, remove or change this check and see note below.
-    if (!creator || creator.type !== "User") {
-      return res.json({
-        success: false,
-        error: "Game is not owned by a user (probably group-owned). Adjust logic if you want group-owned games too.",
-      });
-    }
-
-    const ownerUserId = creator.id; // ID of the user who owns the game
-    console.log("Game owner userId:", ownerUserId);
 
     // STEP 2: Get all gamepasses for this universe (with pagination)
     let allItems = [];
     let cursor = null;
 
     while (true) {
-      const params = new URLSearchParams({
-        limit: "100",
-      });
+      const params = new URLSearchParams({ limit: "100" });
       if (cursor) params.set("cursor", cursor);
 
       const gamePassesUrl = `https://games.roproxy.com/v1/games/${universeId}/game-passes?${params.toString()}`;
@@ -255,34 +239,22 @@ app.get("/donations/game/:universeId", async (req, res) => {
         const price = pass.price;
         const isForSale = pass.isForSale === true;
 
-        // Creator of the gamepass itself
-        const passCreatorId = pass.creator?.id;
-        const passCreatorType = pass.creator?.type;
-
-        // Only include passes which:
-        // 1) Are for sale
-        // 2) Have a valid positive price
-        // 3) Are created by the SAME USER who owns the game
-        if (
-          isForSale &&
-          typeof price === "number" &&
-          price > 0 &&
-          passCreatorType === "User" &&
-          passCreatorId === ownerUserId
-        ) {
+        // TEMP: only require for-sale and positive price.
+        if (isForSale && typeof price === "number" && price > 0) {
           allItems.push({
             id: passId,
             name: passName,
             price: price,
             type: "gamepass",
+            // include creator info for debugging
+            creator: pass.creator,
           });
         }
       }
 
-      // Pagination
       if (gpData.nextPageCursor) {
         cursor = gpData.nextPageCursor;
-        await delay(50); // small delay between paginated requests
+        await delay(50);
       } else {
         break;
       }
@@ -303,7 +275,7 @@ app.get("/donations/game/:universeId", async (req, res) => {
     uniqueItems.sort((a, b) => a.price - b.price);
 
     console.log(
-      `Found ${uniqueItems.length} valid gamepasses for universe ${universeId} (owned by user ${ownerUserId}).`
+      `Found ${uniqueItems.length} valid gamepasses for universe ${universeId}.`
     );
 
     res.json({
@@ -311,7 +283,7 @@ app.get("/donations/game/:universeId", async (req, res) => {
       items: uniqueItems,
       count: uniqueItems.length,
       universeId: universeId,
-      ownerUserId: ownerUserId,
+      gameCreator: creator,
     });
   } catch (error) {
     console.error("Error in game donations endpoint:", error);
@@ -319,13 +291,30 @@ app.get("/donations/game/:universeId", async (req, res) => {
   }
 });
 
+// ============================================
+// DEBUG ENDPOINTS
+// ============================================
+
 // Debug endpoint – shows raw gamepass API response (user-based)
 app.get("/debug/:userId", async (req, res) => {
   const url = `https://apis.roproxy.com/game-passes/v1/users/${req.params.userId}/game-passes?count=100`;
   try {
     const r = await fetch(url);
     const text = await r.text();
-    res.send(`Status: ${r.status}\nBody: ${text}`);
+    res.send(`Status: ${r.status}\nURL: ${url}\nBody:\n${text}`);
+  } catch (e) {
+    res.send(`Error: ${e.message}`);
+  }
+});
+
+// Debug endpoint – shows raw gamepasses for a universe (game)
+app.get("/debug/game/:universeId", async (req, res) => {
+  const universeId = req.params.universeId;
+  const url = `https://games.roproxy.com/v1/games/${universeId}/game-passes?limit=100`;
+  try {
+    const r = await fetch(url);
+    const text = await r.text();
+    res.send(`Status: ${r.status}\nURL: ${url}\nBody:\n${text}`);
   } catch (e) {
     res.send(`Error: ${e.message}`);
   }
