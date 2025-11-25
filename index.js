@@ -1,3 +1,80 @@
+const express = require("express");
+const fetch = require("node-fetch");
+const app = express();
+
+app.use(express.json());
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
+  next();
+});
+
+// Health check
+app.get("/", (req, res) => {
+  res.json({ status: "Donation Proxy Running!", time: new Date().toISOString() });
+});
+
+// Simple delay helper
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ======================================================
+// GET USER ID FROM USERNAME
+// ======================================================
+app.get("/userid/:username", async (req, res) => {
+  try {
+    const username = req.params.username;
+    const response = await fetch("https://users.roproxy.com/v1/usernames/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ usernames: [username], excludeBannedUsers: true }),
+    });
+
+    const data = await response.json();
+
+    if (data.data && data.data.length > 0) {
+      res.json({
+        success: true,
+        userId: data.data[0].id,
+        username: data.data[0].name,
+      });
+    } else {
+      res.json({ success: false, error: "User not found" });
+    }
+  } catch (error) {
+    console.error("Error fetching user:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch user" });
+  }
+});
+
+// ======================================================
+// GET USER INFO BY ID
+// ======================================================
+app.get("/userinfo/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const response = await fetch(`https://users.roproxy.com/v1/users/${userId}`);
+    const data = await response.json();
+    if (data.id) {
+      res.json({
+        success: true,
+        userId: data.id,
+        username: data.name,
+        displayName: data.displayName,
+      });
+    } else {
+      res.json({ success: false, error: "User not found" });
+    }
+  } catch (error) {
+    console.error("Error fetching user info:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch user info" });
+  }
+});
+
+// ======================================================
+// MAIN DONATIONS ENDPOINT (GAMEPASSES CREATED BY USER)
+// Uses /users/inventory/list-json?assetTypeId=34
+// and filters Creator.Id == userId
+// ======================================================
 app.get("/donations/:userId", async (req, res) => {
   console.log("\n==== /donations route hit ====");
   try {
@@ -13,7 +90,7 @@ app.get("/donations/:userId", async (req, res) => {
     const maxReturn =
       !Number.isNaN(limitParam) && limitParam > 0 ? limitParam : Infinity;
 
-    console.log("maxReturn from query ?limit=", maxReturn);
+    console.log("maxReturn from query ?limit= ", maxReturn);
 
     let allItems = [];
 
@@ -42,7 +119,6 @@ app.get("/donations/:userId", async (req, res) => {
         console.log(
           `Inventory page ${pageNumber} status: ${response.status} ${response.statusText}`
         );
-        // Just log first 300 chars so logs aren't huge
         console.log(
           `Inventory raw body (first 300 chars) page ${pageNumber}:`,
           text.slice(0, 300)
@@ -87,7 +163,7 @@ app.get("/donations/:userId", async (req, res) => {
             `Item from inventory: assetId=${assetId}, name="${name}", CreatorId=${creatorId}`
           );
 
-          // DevForum logic: only include passes where Creator.Id == userId
+          // Only include passes where Creator.Id == userId
           if (creatorId !== userId) {
             console.log(
               `  -> SKIP: creatorId ${creatorId} != requested userId ${userId}`
@@ -100,7 +176,7 @@ app.get("/donations/:userId", async (req, res) => {
             continue;
           }
 
-          // We still need price info; get via product info
+          // We still need price + for-sale info; get via product info
           try {
             const detailsUrl = `https://apis.roproxy.com/marketplace/v1/items/details?itemIds=${assetId}`;
             console.log(`  Fetching details for ${assetId}: ${detailsUrl}`);
@@ -158,7 +234,12 @@ app.get("/donations/:userId", async (req, res) => {
               );
             }
           } catch (err) {
-            console.log("  -> SKIP: Error fetching details for", assetId, ":", err.message);
+            console.log(
+              "  -> SKIP: Error fetching details for",
+              assetId,
+              ":",
+              err.message
+            );
           }
 
           // Tiny delay to be nicer to the API
@@ -207,3 +288,19 @@ app.get("/donations/:userId", async (req, res) => {
       .json({ success: false, error: "Failed to fetch donation items" });
   }
 });
+
+// Debug endpoint – shows raw gamepass API response
+app.get("/debug/:userId", async (req, res) => {
+  const url = `https://apis.roproxy.com/game-passes/v1/users/${req.params.userId}/game-passes?count=100`;
+  try {
+    const r = await fetch(url);
+    const text = await r.text();
+    res.send(`Status: ${r.status}\nBody: ${text}`);
+  } catch (e) {
+    res.send(`Error: ${e.message}`);
+  }
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Donation Proxy running on port ${PORT}`));
