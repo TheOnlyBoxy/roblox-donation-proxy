@@ -44,9 +44,9 @@ app.get("/userid/:username", async (req, res) => {
 app.get("/tshirts/:userId", async (req, res) => {
   try {
     const userId = req.params.userId;
-    const limit = req.query.limit || 20;
     
-    const url = `https://catalog.roblox.com/v1/search/items/details?Category=3&CreatorTargetId=${userId}&CreatorType=1&Limit=${limit}&SortType=0`;
+    // Limit must be 10, 28, or 30 for this API
+    const url = `https://catalog.roblox.com/v1/search/items/details?Category=3&CreatorTargetId=${userId}&CreatorType=1&Limit=30&SortType=0`;
     
     const response = await fetch(url);
     const data = await response.json();
@@ -73,12 +73,12 @@ app.get("/tshirts/:userId", async (req, res) => {
   }
 });
 
-// Get Gamepasses created by user (searches all their games)
+// Get Gamepasses created by user
 app.get("/gamepasses/:userId", async (req, res) => {
   try {
     const userId = req.params.userId;
     
-    // First get user's games/places
+    // Get user's games
     const gamesResponse = await fetch(
       `https://games.roblox.com/v2/users/${userId}/games?accessFilter=Public&limit=50&sortOrder=Asc`
     );
@@ -87,8 +87,7 @@ app.get("/gamepasses/:userId", async (req, res) => {
     let allGamepasses = [];
     
     if (gamesData.data && gamesData.data.length > 0) {
-      // For each game, get its gamepasses
-      for (const game of gamesData.data) {
+      for (const game of gamesData.data.slice(0, 10)) {
         try {
           const universeId = game.id;
           
@@ -99,7 +98,6 @@ app.get("/gamepasses/:userId", async (req, res) => {
           
           if (passesData.data) {
             for (const pass of passesData.data) {
-              // Get price info for each pass
               try {
                 const priceResponse = await fetch(
                   `https://economy.roblox.com/v1/game-passes/${pass.id}/product-info`
@@ -115,17 +113,16 @@ app.get("/gamepasses/:userId", async (req, res) => {
                   });
                 }
               } catch (e) {
-                // Skip this pass if we can't get price
+                // Skip
               }
             }
           }
         } catch (e) {
-          // Skip this game if error
+          // Skip
         }
       }
     }
     
-    // Sort by price
     allGamepasses.sort((a, b) => a.price - b.price);
     
     res.json({ success: true, gamepasses: allGamepasses });
@@ -139,13 +136,12 @@ app.get("/gamepasses/:userId", async (req, res) => {
 app.get("/donations/:userId", async (req, res) => {
   try {
     const userId = req.params.userId;
-    const limit = req.query.limit || 20;
     
     let allItems = [];
     
-    // Fetch T-Shirts
+    // Fetch T-Shirts (Limit must be 10, 28, or 30)
     try {
-      const tshirtUrl = `https://catalog.roblox.com/v1/search/items/details?Category=3&CreatorTargetId=${userId}&CreatorType=1&Limit=${limit}&SortType=0`;
+      const tshirtUrl = `https://catalog.roblox.com/v1/search/items/details?Category=3&CreatorTargetId=${userId}&CreatorType=1&Limit=30&SortType=0`;
       const tshirtResponse = await fetch(tshirtUrl);
       const tshirtData = await tshirtResponse.json();
       
@@ -168,17 +164,17 @@ app.get("/donations/:userId", async (req, res) => {
     // Fetch Gamepasses
     try {
       const gamesResponse = await fetch(
-        `https://games.roblox.com/v2/users/${userId}/games?accessFilter=Public&limit=10&sortOrder=Asc`
+        `https://games.roblox.com/v2/users/${userId}/games?accessFilter=Public&limit=50&sortOrder=Asc`
       );
       const gamesData = await gamesResponse.json();
       
       if (gamesData.data && gamesData.data.length > 0) {
-        for (const game of gamesData.data.slice(0, 5)) { // Limit to 5 games for speed
+        for (const game of gamesData.data.slice(0, 10)) {
           try {
             const universeId = game.id;
             
             const passesResponse = await fetch(
-              `https://games.roblox.com/v1/games/${universeId}/game-passes?limit=20&sortOrder=Asc`
+              `https://games.roblox.com/v1/games/${universeId}/game-passes?limit=100&sortOrder=Asc`
             );
             const passesData = await passesResponse.json();
             
@@ -212,7 +208,7 @@ app.get("/donations/:userId", async (req, res) => {
       console.error("Error fetching gamepasses:", e);
     }
     
-    // Sort by price (lowest first)
+    // Sort by price
     allItems.sort((a, b) => a.price - b.price);
     
     res.json({ success: true, items: allItems });
