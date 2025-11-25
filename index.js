@@ -1,3 +1,78 @@
+const express = require("express");
+const fetch = require("node-fetch");
+const app = express();
+
+app.use(express.json());
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
+  next();
+});
+
+// Health check
+app.get("/", (req, res) => {
+  res.json({ status: "Donation Proxy Running!", time: new Date().toISOString() });
+});
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// ======================================================
+// GET USER ID FROM USERNAME
+// ======================================================
+app.get("/userid/:username", async (req, res) => {
+  try {
+    const username = req.params.username;
+    const response = await fetch("https://users.roproxy.com/v1/usernames/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ usernames: [username], excludeBannedUsers: true }),
+    });
+
+    const data = await response.json();
+
+    if (data.data && data.data.length > 0) {
+      res.json({
+        success: true,
+        userId: data.data[0].id,
+        username: data.data[0].name,
+      });
+    } else {
+      res.json({ success: false, error: "User not found" });
+    }
+  } catch (error) {
+    console.error("Error fetching user:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch user" });
+  }
+});
+
+// ======================================================
+// GET USER INFO BY ID
+// ======================================================
+app.get("/userinfo/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const response = await fetch(`https://users.roproxy.com/v1/users/${userId}`);
+    const data = await response.json();
+    if (data.id) {
+      res.json({
+        success: true,
+        userId: data.id,
+        username: data.name,
+        displayName: data.displayName,
+      });
+    } else {
+      res.json({ success: false, error: "User not found" });
+    }
+  } catch (error) {
+    console.error("Error fetching user info:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch user info" });
+  }
+});
+
+// ======================================================
+// MAIN DONATIONS ENDPOINT (GAMEPASSES ONLY)
+// - Uses BOTH inventory and per-game (universe) scanning
+// ======================================================
 app.get("/donations/:userId", async (req, res) => {
   try {
     const userId = parseInt(req.params.userId, 10);
@@ -11,14 +86,9 @@ app.get("/donations/:userId", async (req, res) => {
     console.log(`\n=== FETCHING DONATIONS (GAMEPASSES) FOR USER ${userId} ===`);
 
     const allItems = [];
-
-    // Helper: add an item if not already present (by id + type)
     const pushItem = (item) => {
       allItems.push(item);
     };
-
-    // Small delay helper
-    const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // ----------------------------------------------------
     // PART 1: INVENTORY-BASED GAMEPASSES (assetTypeId=34)
@@ -156,10 +226,9 @@ app.get("/donations/:userId", async (req, res) => {
 
     // ----------------------------------------------------
     // PART 2: GAME-BASED GAMEPASSES (per universe)
-    // ----------------------------------------------------
+// ----------------------------------------------------
     console.log("\n--- PART 2: PER-GAME GAMEPASSES ---");
     try {
-      // 1) Get games (universes) owned by the user
       const gamesUrl = `https://games.roproxy.com/v2/users/${userId}/games?accessFilter=Public&limit=50&sortOrder=Asc`;
       console.log("[GAMES] URL:", gamesUrl);
 
@@ -187,8 +256,6 @@ app.get("/donations/:userId", async (req, res) => {
               `[GAME] UniverseId=${universeId}, Name="${gameName}"`
             );
 
-            // For each universe, fetch gamepasses
-            // Note: this endpoint shape may vary; adjust if needed
             const gpUrl = `https://apis.roproxy.com/game-passes/v1/games/${universeId}/game-passes?limit=100&sortOrder=Asc`;
             console.log(`[GAMEPASSES] URL for universe ${universeId}:`, gpUrl);
 
@@ -224,7 +291,8 @@ app.get("/donations/:userId", async (req, res) => {
                 continue;
               }
 
-              if (!gpData || !Array.isArray(gpData.data || gpData.gamePasses)) {
+              const passes = gpData.data || gpData.gamePasses;
+              if (!Array.isArray(passes)) {
                 console.log(
                   `[GAMEPASSES] Unexpected shape for universe ${universeId}:`,
                   JSON.stringify(gpData, null, 2).slice(0, 500)
@@ -232,7 +300,6 @@ app.get("/donations/:userId", async (req, res) => {
                 continue;
               }
 
-              const passes = gpData.data || gpData.gamePasses;
               console.log(
                 `[GAMEPASSES] Universe ${universeId} has ${passes.length} passes`
               );
@@ -254,7 +321,6 @@ app.get("/donations/:userId", async (req, res) => {
                   pass.isForSale === "ForSale" ||
                   pass.isPurchasable === true;
 
-                // Log every pass
                 console.log(
                   `[GAMEPASSES] PassId=${passId}, Name="${passName}", CreatorId=${creatorId}, CreatorType=${creatorType}, isForSale=${isForSale}`
                 );
@@ -263,7 +329,6 @@ app.get("/donations/:userId", async (req, res) => {
                 if (creatorId !== userId) continue;
                 if (!isForSale) continue;
 
-                // Get price if not directly present
                 let price = pass.price;
                 if (typeof price !== "number") {
                   try {
@@ -364,9 +429,10 @@ app.get("/donations/:userId", async (req, res) => {
       JSON.stringify(finalItems.slice(0, 5), null, 2)
     );
 
+    // Strip 'source' before sending to Roblox
     res.json({
       success: true,
-      items: finalItems.map(({ source, ...rest }) => rest), // strip 'source' from response if you want
+      items: finalItems.map(({ source, ...rest }) => rest),
       count: finalItems.length,
     });
   } catch (error) {
@@ -374,3 +440,19 @@ app.get("/donations/:userId", async (req, res) => {
     res.status(500).json({ success: false, error: "Failed to fetch donation items" });
   }
 });
+
+// Debug endpoint – shows raw gamepass API response for a user inventory call
+app.get("/debug/:userId", async (req, res) => {
+  const url = `https://apis.roproxy.com/game-passes/v1/users/${req.params.userId}/game-passes?count=100`;
+  try {
+    const r = await fetch(url);
+    const text = await r.text();
+    res.send(`Status: ${r.status}\nBody: ${text}`);
+  } catch (e) {
+    res.send(`Error: ${e.message}`);
+  }
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Donation Proxy running on port ${PORT}`));
