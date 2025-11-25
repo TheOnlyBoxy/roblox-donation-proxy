@@ -1,38 +1,37 @@
-// index.js
-
-// Use node-fetch v2 in CommonJS:
+const express = require('express');
 const fetch = require('node-fetch');
 
-// Simple delay helper
+const app = express();
+const PORT = process.env.PORT || 3000;
+
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-// Whatever your userId is:
-const userId = 123456789; // <-- put the correct userId here
+// GET /donations/:userId
+app.get('/donations/:userId', async (req, res) => {
+  const userId = parseInt(req.params.userId, 10);
+  const limit = parseInt(req.query.limit, 10) || 50;
 
-// allItems can be used elsewhere in your script
-const allItems = [];
+  if (!userId || isNaN(userId)) {
+    return res.json({ success: false, error: 'Invalid userId', items: [] });
+  }
 
-// Wrap all the async/await code in an async function or IIFE
-async function fetchUserCreatedGamepasses() {
-  // ----------------------------------------
-  // STEP 1: Get gamepasses the user CREATED
-  // using inventory/list-json (assetTypeId=34)
-  // ----------------------------------------
+  console.log(`Fetching gamepasses for userId: ${userId}`);
+
+  const allItems = [];
+
   try {
     let pageNumber = 1;
-    const maxPages = 10; // safety cap
+    const maxPages = 10;
     let keepGoing = true;
 
-    while (keepGoing && pageNumber <= maxPages) {
+    while (keepGoing && pageNumber <= maxPages && allItems.length < limit) {
       const url = `https://www.roproxy.com/users/inventory/list-json?assetTypeId=34&cursor=&itemsPerPage=100&pageNumber=${pageNumber}&userId=${userId}`;
-      console.log(`Fetching inventory page ${pageNumber}: ${url}`);
-
+      
       const response = await fetch(url);
       const text = await response.text();
-      console.log(`Raw inventory response for user ${userId}, page ${pageNumber}:`, text);
 
       if (!response.ok) {
-        console.log(`Inventory fetch failed: ${response.status} ${response.statusText}`);
+        console.log(`Inventory fetch failed: ${response.status}`);
         break;
       }
 
@@ -50,76 +49,73 @@ async function fetchUserCreatedGamepasses() {
       }
 
       const items = data.Data.Items;
-      console.log(`Page ${pageNumber} has ${items.length} items`);
+      console.log(`Page ${pageNumber}: ${items.length} items`);
 
-      // If no items, we're probably at the end
       if (items.length === 0) {
-        keepGoing = false;
         break;
       }
 
       for (const item of items) {
-        // DevForum logic: only include passes where Creator.Id == userId
+        // Only include passes created by this user
         const creatorId = item.Creator?.Id;
         if (creatorId !== userId) continue;
 
         const assetId = item.Item?.AssetId;
         const name = item.Item?.Name || "Gamepass";
 
-        // We still need price + for-sale info; get via product info
         if (!assetId) continue;
 
         try {
           const detailsRes = await fetch(
-            `https://apis.roproxy.com/marketplace/v1/items/details?itemIds=${assetId}`
+            `https://economy.roproxy.com/v1/assets/${assetId}/resale-data`
           );
-          const detailsText = await detailsRes.text();
-          if (!detailsRes.ok) {
-            console.log(`Details fetch failed for ${assetId}: ${detailsRes.status}`);
-            continue;
-          }
+          
+          // Try getting price from product info instead
+          const productRes = await fetch(
+            `https://api.roproxy.com/marketplace/productinfo?assetId=${assetId}`
+          );
+          const productText = await productRes.text();
+          
+          if (productRes.ok) {
+            const productData = JSON.parse(productText);
+            const price = productData.PriceInRobux;
+            const isForSale = productData.IsForSale;
 
-          let detailsData;
-          try {
-            detailsData = JSON.parse(detailsText);
-          } catch (e) {
-            console.log("Failed to parse details JSON:", e.message);
-            continue;
-          }
-
-          if (!Array.isArray(detailsData) || detailsData.length === 0) continue;
-
-          const d = detailsData[0];
-          const price = d.price;
-          const isForSale =
-            d.saleLocation === "AllUniverses" ||
-            d.saleLocation === "ExperiencesDevApiOnly";
-
-          if (isForSale && typeof price === "number" && price > 0) {
-            allItems.push({
-              id: assetId,
-              name,
-              price,
-              type: "gamepass",
-            });
+            if (isForSale && typeof price === 'number' && price > 0) {
+              allItems.push({
+                id: assetId,
+                name: productData.Name || name,
+                price: price,
+                type: 'gamepass'
+              });
+            }
           }
         } catch (err) {
           console.log("Error fetching details for", assetId, ":", err.message);
         }
 
-        // Tiny delay to be nicer to the API
+        if (allItems.length >= limit) break;
         await delay(50);
       }
 
-      pageNumber += 1;
+      pageNumber++;
       await delay(100);
     }
 
-    console.log("Done fetching user-created gamepasses:", allItems);
-  } catch (err) {
-    console.error("Error fetching user-created gamepasses:", err.message);
-  }
-}
+    console.log(`Returning ${allItems.length} items for user ${userId}`);
+    res.json({ success: true, items: allItems });
 
-// Call the function
-fetchUserCreatedGamepasses();
+  } catch (err) {
+    console.error("Error:", err.message);
+    res.json({ success: false, error: err.message, items: [] });
+  }
+});
+
+// Health check
+app.get('/', (req, res) => {
+  res.send('Donation proxy is running!');
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
