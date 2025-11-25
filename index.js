@@ -66,7 +66,7 @@ app.get("/userinfo/:userId", async (req, res) => {
 });
 
 // ============================================
-// MAIN DONATIONS ENDPOINT (FIXED)
+// MAIN DONATIONS ENDPOINT (GAMEPASSES ONLY)
 // ============================================
 app.get("/donations/:userId", async (req, res) => {
   try {
@@ -76,78 +76,43 @@ app.get("/donations/:userId", async (req, res) => {
     console.log(`\n=== Fetching donations for user ${userId} ===`);
 
     // ----------------------------------------
-    // STEP 1: Get gamepasses created by the user
+    // STEP 1: Get gamepasses for the user (using gamePasses array)
     // ----------------------------------------
     try {
-      let cursor = null;
-      let pageCount = 0;
+      const url = `https://apis.roproxy.com/game-passes/v1/users/${userId}/game-passes?count=100`;
+      console.log(`Fetching gamepasses: ${url}`);
 
-      do {
-        const url = cursor
-          ? `https://apis.roproxy.com/game-passes/v1/users/${userId}/game-passes?count=100&cursor=${cursor}`
-          : `https://apis.roproxy.com/game-passes/v1/users/${userId}/game-passes?count=100`;
+      const response = await fetch(url);
+      const text = await response.text();
+      console.log("Raw gamepass response for", userId, ":", text);
 
-        console.log(`Fetching gamepasses: ${url}`);
-
-        const response = await fetch(url);
-        if (!response.ok) {
-          console.log(`Gamepass fetch failed: ${response.status} ${response.statusText}`);
-          break;
+      if (!response.ok) {
+        console.log(`Gamepass fetch failed: ${response.status} ${response.statusText}`);
+      } else {
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          console.log("Failed to parse gamepass JSON:", e.message);
+          data = null;
         }
 
-        const data = await response.json();
-        if (data.data && Array.isArray(data.data)) {
-          for (const pass of data.data) {
-            const passId = pass.id || pass.gamePassId;
-            const passName = pass.name || pass.displayName || "Gamepass";
+        if (data && Array.isArray(data.gamePasses)) {
+          for (const pass of data.gamePasses) {
+            const passId = pass.gamePassId;
+            const passName = pass.name || "Gamepass";
+            const price = pass.price;
+            const isForSale = pass.isForSale === true;
 
-            let price = null;
-            let isForSale = false;
+            const creatorId = pass.creator?.creatorId;
+            const creatorType = pass.creator?.creatorType;
 
-            try {
-              const priceResponse = await fetch(
-                `https://economy.roproxy.com/v1/game-passes/${passId}/product-info`
-              );
-              if (priceResponse.ok) {
-                const priceData = await priceResponse.json();
-
-                const creatorId = priceData.Creator?.Id;
-                const creatorType = priceData.Creator?.Type;
-
-                console.log("Product info for pass", passId, {
-                  creatorId,
-                  creatorType,
-                  userId,
-                  price: priceData.PriceInRobux,
-                  isForSale: priceData.IsForSale,
-                });
-
-                // Must be for sale and have a price
-                price = priceData.PriceInRobux;
-                isForSale = priceData.IsForSale === true;
-
-                // OPTIONAL SAFETY: ensure the creator matches the user
-                if (creatorId != userId) {
-                  console.log(
-                    `Skipping pass ${passId} because creatorId != userId`,
-                    creatorId,
-                    userId
-                  );
-                  continue;
-                }
-              } else {
-                console.log(
-                  `Failed to get product-info for gamepass ${passId}:`,
-                  priceResponse.status,
-                  priceResponse.statusText
-                );
-              }
-              await delay(50);
-            } catch (priceErr) {
-              console.error(`Failed to get price for gamepass ${passId}:`, priceErr.message);
+            // Only include passes actually created by this user
+            if (creatorId !== userId || creatorType !== "User") {
+              continue;
             }
 
-            if (isForSale && price && price > 0) {
+            if (isForSale && typeof price === "number" && price > 0) {
               allItems.push({
                 id: passId,
                 name: passName,
@@ -156,67 +121,18 @@ app.get("/donations/:userId", async (req, res) => {
               });
             }
           }
+        } else {
+          console.log("No gamePasses array in response or not an array");
         }
+      }
 
-        cursor = data.nextPageCursor || null;
-        pageCount++;
-        if (pageCount > 5) break;
-      } while (cursor);
+      await delay(50);
     } catch (err) {
       console.error("Error fetching gamepasses:", err.message);
     }
 
     // ----------------------------------------
-    // STEP 2: T-Shirts
-    // ----------------------------------------
-    try {
-      const catalogUrl = `https://catalog.roproxy.com/v1/search/items?category=Clothing&subcategory=ClassicTShirts&creatorTargetId=${userId}&creatorType=User&limit=60&sortOrder=Desc&sortType=Updated`;
-      console.log(`Fetching t-shirts: ${catalogUrl}`);
-
-      const catalogResponse = await fetch(catalogUrl);
-      if (catalogResponse.ok) {
-        const catalogData = await catalogResponse.json();
-        if (catalogData.data && Array.isArray(catalogData.data)) {
-          for (const item of catalogData.data) {
-            try {
-              const assetId = item.id;
-              const infoResponse = await fetch(
-                `https://economy.roproxy.com/v1/assets/${assetId}/product-info`
-              );
-              if (infoResponse.ok) {
-                const infoData = await infoResponse.json();
-                const price = infoData.PriceInRobux;
-                const isForSale = infoData.IsForSale === true;
-                const name = infoData.Name || item.name || "T-Shirt";
-
-                if (isForSale && price && price > 0) {
-                  allItems.push({
-                    id: assetId,
-                    name: name,
-                    price: price,
-                    type: "tshirt",
-                  });
-                }
-              }
-              await delay(50);
-            } catch (itemErr) {
-              console.error("Error processing t-shirt item:", itemErr.message);
-            }
-          }
-        }
-      } else {
-        console.log(
-          "T-shirt catalog fetch failed:",
-          catalogResponse.status,
-          catalogResponse.statusText
-        );
-      }
-    } catch (err) {
-      console.error("Error fetching t-shirts:", err.message);
-    }
-
-    // ----------------------------------------
-    // STEP 3: Cleanup and respond
+    // STEP 2: Cleanup and respond
     // ----------------------------------------
     const uniqueItems = [];
     const seen = new Set();
@@ -242,7 +158,7 @@ app.get("/donations/:userId", async (req, res) => {
   }
 });
 
-// Debug endpoint
+// Debug endpoint – shows raw gamepass API response
 app.get("/debug/:userId", async (req, res) => {
   const url = `https://apis.roproxy.com/game-passes/v1/users/${req.params.userId}/game-passes?count=100`;
   try {
