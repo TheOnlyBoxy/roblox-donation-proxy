@@ -16,15 +16,15 @@ app.get("/", (req, res) => {
 app.get("/userid/:username", async (req, res) => {
   try {
     const username = req.params.username;
-    
+
     const response = await fetch("https://users.roblox.com/v1/usernames/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ usernames: [username], excludeBannedUsers: true })
     });
-    
+
     const data = await response.json();
-    
+
     if (data.data && data.data.length > 0) {
       res.json({ 
         success: true, 
@@ -40,177 +40,14 @@ app.get("/userid/:username", async (req, res) => {
   }
 });
 
-// Get gamepasses for a specific universe
-app.get("/game-passes/:universeId", async (req, res) => {
-  try {
-    const universeId = req.params.universeId;
-    
-    // Try multiple endpoints
-    let gamepasses = [];
-    
-    // Method 1: games.roblox.com v1
-    try {
-      const response = await fetch(
-        `https://games.roblox.com/v1/games/${universeId}/game-passes?limit=100&sortOrder=Asc`
-      );
-      const data = await response.json();
-      if (data.data) {
-        gamepasses = data.data;
-      }
-    } catch (e) {}
-    
-    // Method 2: apis.roblox.com (newer)
-    if (gamepasses.length === 0) {
-      try {
-        const response = await fetch(
-          `https://apis.roblox.com/game-passes/v1/game-passes?universeIds=${universeId}`
-        );
-        const data = await response.json();
-        if (data.data) {
-          gamepasses = data.data;
-        }
-      } catch (e) {}
-    }
-    
-    res.json({ success: true, gamepasses: gamepasses });
-  } catch (error) {
-    res.status(500).json({ success: false, error: "Failed to fetch gamepasses" });
-  }
-});
-
-// Main donations endpoint
-app.get("/donations/:userId", async (req, res) => {
-  try {
-    const userId = req.params.userId;
-    let allItems = [];
-    
-    // Get user's games
-    const gamesResponse = await fetch(
-      `https://games.roblox.com/v2/users/${userId}/games?accessFilter=Public&limit=50&sortOrder=Asc`
-    );
-    const gamesData = await gamesResponse.json();
-    
-    console.log(`Found ${gamesData.data ? gamesData.data.length : 0} games for user ${userId}`);
-    
-    if (gamesData.data && gamesData.data.length > 0) {
-      for (const game of gamesData.data.slice(0, 15)) {
-        try {
-          const universeId = game.id;
-          const rootPlaceId = game.rootPlace ? game.rootPlace.id : null;
-          
-          console.log(`Checking game: ${game.name} (Universe: ${universeId}, Place: ${rootPlaceId})`);
-          
-          // Method 1: Try with universe ID on games.roblox.com
-          let passesData = null;
-          try {
-            const passesResponse = await fetch(
-              `https://games.roblox.com/v1/games/${universeId}/game-passes?limit=100&sortOrder=Asc`
-            );
-            passesData = await passesResponse.json();
-          } catch (e) {}
-          
-          // Method 2: Try www.roblox.com/games/getgamepasses
-          if (!passesData || !passesData.data || passesData.data.length === 0) {
-            if (rootPlaceId) {
-              try {
-                const passesResponse = await fetch(
-                  `https://www.roblox.com/games/getgamepasses?placeId=${rootPlaceId}&startIndex=0&maxRows=100`
-                );
-                const rawData = await passesResponse.json();
-                if (rawData && rawData.data) {
-                  passesData = { data: rawData.data };
-                }
-              } catch (e) {}
-            }
-          }
-          
-          // Method 3: economy.roblox.com
-          if (!passesData || !passesData.data || passesData.data.length === 0) {
-            try {
-              const passesResponse = await fetch(
-                `https://economy.roblox.com/v1/universes/${universeId}/game-passes?limit=100&sortOrder=Asc`
-              );
-              passesData = await passesResponse.json();
-            } catch (e) {}
-          }
-          
-          // Process gamepasses
-          if (passesData && passesData.data && passesData.data.length > 0) {
-            console.log(`Found ${passesData.data.length} passes for ${game.name}`);
-            
-            for (const pass of passesData.data) {
-              try {
-                // Get pass ID (different APIs return it differently)
-                const passId = pass.id || pass.Id || pass.gamePassId || pass.GamePassId;
-                const passName = pass.name || pass.Name;
-                
-                if (!passId) continue;
-                
-                // Get price info
-                let price = pass.price || pass.Price || pass.PriceInRobux || null;
-                let isForSale = pass.isForSale || pass.IsForSale || true;
-                
-                // If no price, fetch it
-                if (price === null) {
-                  try {
-                    const priceResponse = await fetch(
-                      `https://economy.roblox.com/v1/game-passes/${passId}/product-info`
-                    );
-                    const priceData = await priceResponse.json();
-                    price = priceData.PriceInRobux;
-                    isForSale = priceData.IsForSale;
-                  } catch (e) {}
-                }
-                
-                // Add if valid
-                if (price && price > 0 && isForSale) {
-                  allItems.push({
-                    id: passId,
-                    name: passName || "Gamepass",
-                    price: price,
-                    type: "gamepass"
-                  });
-                  console.log(`Added gamepass: ${passName} - R$${price}`);
-                }
-              } catch (e) {}
-            }
-          }
-        } catch (e) {
-          console.error(`Error processing game:`, e);
-        }
-      }
-    }
-    
-    // Remove duplicates
-    const uniqueItems = [];
-    const seenIds = new Set();
-    for (const item of allItems) {
-      if (!seenIds.has(item.id)) {
-        seenIds.add(item.id);
-        uniqueItems.push(item);
-      }
-    }
-    
-    // Sort by price
-    uniqueItems.sort((a, b) => a.price - b.price);
-    
-    console.log(`Total: ${uniqueItems.length} gamepasses for user ${userId}`);
-    
-    res.json({ success: true, items: uniqueItems });
-  } catch (error) {
-    console.error("Error fetching donations:", error);
-    res.status(500).json({ success: false, error: "Failed to fetch donation items" });
-  }
-});
-
-// Get user info by ID  
+// Get user info by ID
 app.get("/userinfo/:userId", async (req, res) => {
   try {
     const userId = req.params.userId;
-    
+
     const response = await fetch(`https://users.roblox.com/v1/users/${userId}`);
     const data = await response.json();
-    
+
     if (data.id) {
       res.json({ 
         success: true, 
@@ -224,6 +61,252 @@ app.get("/userinfo/:userId", async (req, res) => {
   } catch (error) {
     console.error("Error fetching user info:", error);
     res.status(500).json({ success: false, error: "Failed to fetch user info" });
+  }
+});
+
+// ============================================
+// NEW: Get gamepasses directly by user ID
+// This uses the NEW endpoint from DevForum
+// ============================================
+app.get("/user-gamepasses/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    let allGamepasses = [];
+    let cursor = null;
+
+    // Paginate through all gamepasses
+    do {
+      const url = cursor 
+        ? `https://apis.roblox.com/game-passes/v1/users/${userId}/game-passes?count=100&cursor=${cursor}`
+        : `https://apis.roblox.com/game-passes/v1/users/${userId}/game-passes?count=100`;
+
+      console.log(`Fetching: ${url}`);
+
+      const response = await fetch(url);
+      
+      if (!response.ok) {
+        console.error(`API returned ${response.status}: ${response.statusText}`);
+        break;
+      }
+
+      const data = await response.json();
+      
+      if (data.data && Array.isArray(data.data)) {
+        allGamepasses = allGamepasses.concat(data.data);
+      }
+
+      cursor = data.nextPageCursor || null;
+
+    } while (cursor);
+
+    console.log(`Found ${allGamepasses.length} gamepasses for user ${userId}`);
+
+    res.json({ 
+      success: true, 
+      gamepasses: allGamepasses,
+      count: allGamepasses.length
+    });
+
+  } catch (error) {
+    console.error("Error fetching user gamepasses:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch gamepasses" });
+  }
+});
+
+// ============================================
+// MAIN DONATIONS ENDPOINT - REWRITTEN
+// ============================================
+app.get("/donations/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    let allItems = [];
+
+    console.log(`\n=== Fetching donations for user ${userId} ===`);
+
+    // ----------------------------------------
+    // STEP 1: Get gamepasses using NEW API
+    // ----------------------------------------
+    try {
+      let cursor = null;
+      
+      do {
+        const url = cursor 
+          ? `https://apis.roblox.com/game-passes/v1/users/${userId}/game-passes?count=100&cursor=${cursor}`
+          : `https://apis.roblox.com/game-passes/v1/users/${userId}/game-passes?count=100`;
+
+        console.log(`Fetching gamepasses: ${url}`);
+
+        const response = await fetch(url);
+        
+        if (response.ok) {
+          const data = await response.json();
+          
+          if (data.data && Array.isArray(data.data)) {
+            for (const pass of data.data) {
+              // The new API returns different field names
+              const passId = pass.id || pass.gamePassId;
+              const passName = pass.name || pass.displayName || "Gamepass";
+              
+              // Get price info from economy API
+              let price = null;
+              let isForSale = false;
+
+              try {
+                const priceResponse = await fetch(
+                  `https://economy.roblox.com/v1/game-passes/${passId}/product-info`
+                );
+                
+                if (priceResponse.ok) {
+                  const priceData = await priceResponse.json();
+                  price = priceData.PriceInRobux;
+                  isForSale = priceData.IsForSale === true;
+                  
+                  console.log(`  Gamepass ${passId}: ${passName} - R$${price} (ForSale: ${isForSale})`);
+                }
+              } catch (priceErr) {
+                console.error(`  Failed to get price for gamepass ${passId}`);
+              }
+
+              // Only add if for sale with valid price
+              if (isForSale && price && price > 0) {
+                allItems.push({
+                  id: passId,
+                  name: passName,
+                  price: price,
+                  type: "gamepass"
+                });
+              }
+            }
+          }
+
+          cursor = data.nextPageCursor || null;
+        } else {
+          console.error(`Gamepass API returned ${response.status}`);
+          cursor = null;
+        }
+
+      } while (cursor);
+
+    } catch (gamepassError) {
+      console.error("Error fetching gamepasses:", gamepassError.message);
+    }
+
+    // ----------------------------------------
+    // STEP 2: Get T-Shirts (catalog API)
+    // ----------------------------------------
+    try {
+      const catalogUrl = `https://catalog.roblox.com/v1/search/items?category=Clothing&subcategory=ClassicTShirts&creatorTargetId=${userId}&creatorType=User&limit=30&sortOrder=Desc&sortType=Updated`;
+      
+      console.log(`Fetching t-shirts: ${catalogUrl}`);
+
+      const catalogResponse = await fetch(catalogUrl);
+      
+      if (catalogResponse.ok) {
+        const catalogData = await catalogResponse.json();
+        
+        if (catalogData.data && Array.isArray(catalogData.data)) {
+          console.log(`Found ${catalogData.data.length} t-shirts`);
+
+          for (const item of catalogData.data) {
+            try {
+              const assetId = item.id;
+              
+              // Get price info
+              const infoResponse = await fetch(
+                `https://economy.roblox.com/v1/assets/${assetId}/product-info`
+              );
+              
+              if (infoResponse.ok) {
+                const infoData = await infoResponse.json();
+                
+                const price = infoData.PriceInRobux;
+                const isForSale = infoData.IsForSale === true;
+                const name = infoData.Name || item.name || "T-Shirt";
+
+                console.log(`  T-Shirt ${assetId}: ${name} - R$${price} (ForSale: ${isForSale})`);
+
+                if (isForSale && price && price > 0) {
+                  allItems.push({
+                    id: assetId,
+                    name: name,
+                    price: price,
+                    type: "tshirt"
+                  });
+                }
+              }
+            } catch (itemErr) {
+              console.error(`  Failed to get t-shirt info`);
+            }
+          }
+        }
+      }
+    } catch (tshirtError) {
+      console.error("Error fetching t-shirts:", tshirtError.message);
+    }
+
+    // ----------------------------------------
+    // STEP 3: Remove duplicates and sort
+    // ----------------------------------------
+    const uniqueItems = [];
+    const seenIds = new Set();
+    
+    for (const item of allItems) {
+      const key = `${item.type}_${item.id}`;
+      if (!seenIds.has(key)) {
+        seenIds.add(key);
+        uniqueItems.push(item);
+      }
+    }
+
+    // Sort by price (lowest first)
+    uniqueItems.sort((a, b) => a.price - b.price);
+
+    console.log(`\n=== Total: ${uniqueItems.length} donation items for user ${userId} ===\n`);
+
+    res.json({ 
+      success: true, 
+      items: uniqueItems,
+      count: uniqueItems.length
+    });
+
+  } catch (error) {
+    console.error("Error in donations endpoint:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch donation items" });
+  }
+});
+
+// ============================================
+// DEBUG: Test the new gamepass API directly
+// ============================================
+app.get("/debug/gamepasses/:userId", async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    
+    const url = `https://apis.roblox.com/game-passes/v1/users/${userId}/game-passes?count=100`;
+    console.log(`DEBUG - Fetching: ${url}`);
+
+    const response = await fetch(url);
+    const responseText = await response.text();
+    
+    console.log(`DEBUG - Status: ${response.status}`);
+    console.log(`DEBUG - Response: ${responseText.substring(0, 500)}`);
+
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      data = { raw: responseText };
+    }
+
+    res.json({
+      status: response.status,
+      statusText: response.statusText,
+      headers: Object.fromEntries(response.headers),
+      data: data
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
