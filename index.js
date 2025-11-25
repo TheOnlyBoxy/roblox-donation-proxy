@@ -2,8 +2,10 @@ const express = require("express");
 const fetch = require("node-fetch");
 const app = express();
 
+app.use(express.json());
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
   next();
 });
 
@@ -12,27 +14,25 @@ app.get("/", (req, res) => {
   res.json({ status: "Donation Proxy Running!", time: new Date().toISOString() });
 });
 
-// Helper function for delays to prevent rate limiting
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Get user ID from username
 app.get("/userid/:username", async (req, res) => {
   try {
     const username = req.params.username;
-    // USE ROPROXY
     const response = await fetch("https://users.roproxy.com/v1/usernames/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ usernames: [username], excludeBannedUsers: true })
+      body: JSON.stringify({ usernames: [username], excludeBannedUsers: true }),
     });
 
     const data = await response.json();
 
     if (data.data && data.data.length > 0) {
-      res.json({ 
-        success: true, 
-        userId: data.data[0].id, 
-        username: data.data[0].name 
+      res.json({
+        success: true,
+        userId: data.data[0].id,
+        username: data.data[0].name,
       });
     } else {
       res.json({ success: false, error: "User not found" });
@@ -47,16 +47,14 @@ app.get("/userid/:username", async (req, res) => {
 app.get("/userinfo/:userId", async (req, res) => {
   try {
     const userId = req.params.userId;
-    // USE ROPROXY
     const response = await fetch(`https://users.roproxy.com/v1/users/${userId}`);
     const data = await response.json();
-
     if (data.id) {
-      res.json({ 
-        success: true, 
-        userId: data.id, 
+      res.json({
+        success: true,
+        userId: data.id,
         username: data.name,
-        displayName: data.displayName
+        displayName: data.displayName,
       });
     } else {
       res.json({ success: false, error: "User not found" });
@@ -72,41 +70,36 @@ app.get("/userinfo/:userId", async (req, res) => {
 // ============================================
 app.get("/donations/:userId", async (req, res) => {
   try {
-    const userId = req.params.userId;
+    const userId = parseInt(req.params.userId);
     let allItems = [];
 
     console.log(`\n=== Fetching donations for user ${userId} ===`);
 
     // ----------------------------------------
-    // STEP 1: Get gamepasses using NEW API (via ROPROXY)
+    // STEP 1: Get gamepasses created by the user
     // ----------------------------------------
     try {
       let cursor = null;
       let pageCount = 0;
-      
       do {
-        // USE ROPROXY instead of apis.roblox.com
-        const url = cursor 
+        const url = cursor
           ? `https://apis.roproxy.com/game-passes/v1/users/${userId}/game-passes?count=100&cursor=${cursor}`
           : `https://apis.roproxy.com/game-passes/v1/users/${userId}/game-passes?count=100`;
 
         console.log(`Fetching gamepasses: ${url}`);
 
         const response = await fetch(url);
-        
         if (!response.ok) {
-            console.log(`Gamepass fetch failed: ${response.status} ${response.statusText}`);
-            break; 
+          console.log(`Gamepass fetch failed: ${response.status} ${response.statusText}`);
+          break;
         }
 
         const data = await response.json();
-        
         if (data.data && Array.isArray(data.data)) {
           for (const pass of data.data) {
             const passId = pass.id || pass.gamePassId;
             const passName = pass.name || pass.displayName || "Gamepass";
-            
-            // USE ROPROXY for economy
+
             let price = null;
             let isForSale = false;
 
@@ -114,14 +107,20 @@ app.get("/donations/:userId", async (req, res) => {
               const priceResponse = await fetch(
                 `https://economy.roproxy.com/v1/game-passes/${passId}/product-info`
               );
-              
               if (priceResponse.ok) {
                 const priceData = await priceResponse.json();
-                price = priceData.PriceInRobux;
-                isForSale = priceData.IsForSale === true;
+                const creatorId = priceData.Creator?.Id;
+                const creatorType = priceData.Creator?.Type;
+
+                // Only include if created by this user
+                if (creatorId === userId && creatorType === "User") {
+                  price = priceData.PriceInRobux;
+                  isForSale = priceData.IsForSale === true;
+                } else {
+                  continue;
+                }
               }
-              // Add a tiny delay to be nice to the API
-              await delay(50); 
+              await delay(50);
             } catch (priceErr) {
               console.error(`  Failed to get price for gamepass ${passId}`);
             }
@@ -131,7 +130,7 @@ app.get("/donations/:userId", async (req, res) => {
                 id: passId,
                 name: passName,
                 price: price,
-                type: "gamepass"
+                type: "gamepass",
               });
             }
           }
@@ -139,41 +138,32 @@ app.get("/donations/:userId", async (req, res) => {
 
         cursor = data.nextPageCursor || null;
         pageCount++;
-        if(pageCount > 5) break; // Safety break
-
+        if (pageCount > 5) break;
       } while (cursor);
-
-    } catch (gamepassError) {
-      console.error("Error fetching gamepasses:", gamepassError.message);
+    } catch (err) {
+      console.error("Error fetching gamepasses:", err.message);
     }
 
+    // Optional: also fetch shirts if you want (comment out if not)
     // ----------------------------------------
-    // STEP 2: Get T-Shirts (via ROPROXY)
+    // STEP 2: T-Shirts
     // ----------------------------------------
     try {
-      // USE ROPROXY
       const catalogUrl = `https://catalog.roproxy.com/v1/search/items?category=Clothing&subcategory=ClassicTShirts&creatorTargetId=${userId}&creatorType=User&limit=60&sortOrder=Desc&sortType=Updated`;
-      
       console.log(`Fetching t-shirts: ${catalogUrl}`);
 
       const catalogResponse = await fetch(catalogUrl);
-      
       if (catalogResponse.ok) {
         const catalogData = await catalogResponse.json();
-        
         if (catalogData.data && Array.isArray(catalogData.data)) {
           for (const item of catalogData.data) {
             try {
               const assetId = item.id;
-              
-              // USE ROPROXY
               const infoResponse = await fetch(
                 `https://economy.roproxy.com/v1/assets/${assetId}/product-info`
               );
-              
               if (infoResponse.ok) {
                 const infoData = await infoResponse.json();
-                
                 const price = infoData.PriceInRobux;
                 const isForSale = infoData.IsForSale === true;
                 const name = infoData.Name || item.name || "T-Shirt";
@@ -183,64 +173,57 @@ app.get("/donations/:userId", async (req, res) => {
                     id: assetId,
                     name: name,
                     price: price,
-                    type: "tshirt"
+                    type: "tshirt",
                   });
                 }
               }
-              await delay(50); // Tiny delay
+              await delay(50);
             } catch (itemErr) {}
           }
         }
       }
-    } catch (tshirtError) {
-      console.error("Error fetching t-shirts:", tshirtError.message);
+    } catch (err) {
+      console.error("Error fetching t-shirts:", err.message);
     }
 
     // ----------------------------------------
-    // STEP 3: Clean up
+    // STEP 3: Cleanup and respond
     // ----------------------------------------
     const uniqueItems = [];
-    const seenIds = new Set();
-    
+    const seen = new Set();
     for (const item of allItems) {
       const key = `${item.type}_${item.id}`;
-      if (!seenIds.has(key)) {
-        seenIds.add(key);
+      if (!seen.has(key)) {
+        seen.add(key);
         uniqueItems.push(item);
       }
     }
 
     uniqueItems.sort((a, b) => a.price - b.price);
-
     console.log(`Found ${uniqueItems.length} valid items.`);
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       items: uniqueItems,
-      count: uniqueItems.length
+      count: uniqueItems.length,
     });
-
   } catch (error) {
     console.error("Error in donations endpoint:", error);
     res.status(500).json({ success: false, error: "Failed to fetch donation items" });
   }
 });
 
-// Debug endpoint to check raw API status
+// Debug endpoint
 app.get("/debug/:userId", async (req, res) => {
-    const userId = req.params.userId;
-    const url = `https://apis.roproxy.com/game-passes/v1/users/${userId}/game-passes?count=100`;
-    
-    try {
-        const response = await fetch(url);
-        const text = await response.text();
-        res.send(`Status: ${response.status}\nBody: ${text}`);
-    } catch (e) {
-        res.send(`Error: ${e.message}`);
-    }
+  const url = `https://apis.roproxy.com/game-passes/v1/users/${req.params.userId}/game-passes?count=100`;
+  try {
+    const r = await fetch(url);
+    const text = await r.text();
+    res.send(`Status: ${r.status}\nBody: ${text}`);
+  } catch (e) {
+    res.send(`Error: ${e.message}`);
+  }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Donation Proxy running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Donation Proxy running on port ${PORT}`));
