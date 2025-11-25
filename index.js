@@ -66,7 +66,7 @@ app.get("/userinfo/:userId", async (req, res) => {
 });
 
 // ============================================
-// MAIN DONATIONS ENDPOINT (GAMEPASSES ONLY)
+// MAIN DONATIONS ENDPOINT (GAMEPASSES BY USER)
 // ============================================
 app.get("/donations/:userId", async (req, res) => {
   try {
@@ -158,7 +158,168 @@ app.get("/donations/:userId", async (req, res) => {
   }
 });
 
-// Debug endpoint – shows raw gamepass API response
+// ============================================
+// DONATIONS BY GAME (UNIVERSE) ID
+// ============================================
+app.get("/donations/game/:universeId", async (req, res) => {
+  const universeId = req.params.universeId;
+
+  try {
+    console.log(`\n=== Fetching donations for universe ${universeId} ===`);
+
+    // STEP 1: Get game (universe) info to check the creator
+    const gameInfoUrl = `https://games.roproxy.com/v1/games?universeIds=${universeId}`;
+    console.log("Fetching game info:", gameInfoUrl);
+
+    const gameInfoRes = await fetch(gameInfoUrl);
+    const gameInfoText = await gameInfoRes.text();
+    console.log("Raw game info response:", gameInfoText);
+
+    if (!gameInfoRes.ok) {
+      return res.status(500).json({
+        success: false,
+        error: `Failed to fetch game info: ${gameInfoRes.status} ${gameInfoRes.statusText}`,
+      });
+    }
+
+    let gameInfo;
+    try {
+      gameInfo = JSON.parse(gameInfoText);
+    } catch (e) {
+      console.error("Failed to parse game info JSON:", e.message);
+      return res.status(500).json({
+        success: false,
+        error: "Invalid JSON returned from game info API",
+      });
+    }
+
+    if (!Array.isArray(gameInfo.data) || gameInfo.data.length === 0) {
+      return res.json({ success: false, error: "Game (universe) not found" });
+    }
+
+    const game = gameInfo.data[0];
+    const creator = game.creator;
+    console.log("Game creator:", creator);
+
+    // NOTE:
+    // This block only allows USER-owned games.
+    // If your game is group-owned, remove or change this check and see note below.
+    if (!creator || creator.type !== "User") {
+      return res.json({
+        success: false,
+        error: "Game is not owned by a user (probably group-owned). Adjust logic if you want group-owned games too.",
+      });
+    }
+
+    const ownerUserId = creator.id; // ID of the user who owns the game
+    console.log("Game owner userId:", ownerUserId);
+
+    // STEP 2: Get all gamepasses for this universe (with pagination)
+    let allItems = [];
+    let cursor = null;
+
+    while (true) {
+      const params = new URLSearchParams({
+        limit: "100",
+      });
+      if (cursor) params.set("cursor", cursor);
+
+      const gamePassesUrl = `https://games.roproxy.com/v1/games/${universeId}/game-passes?${params.toString()}`;
+      console.log("Fetching gamepasses for game:", gamePassesUrl);
+
+      const gpRes = await fetch(gamePassesUrl);
+      const gpText = await gpRes.text();
+      console.log("Raw gamepasses response:", gpText);
+
+      if (!gpRes.ok) {
+        console.error("Failed to fetch gamepasses:", gpRes.status, gpRes.statusText);
+        break;
+      }
+
+      let gpData;
+      try {
+        gpData = JSON.parse(gpText);
+      } catch (e) {
+        console.error("Failed to parse gamepasses JSON:", e.message);
+        break;
+      }
+
+      if (!Array.isArray(gpData.data)) {
+        console.log("No gamepasses 'data' array in response.");
+        break;
+      }
+
+      for (const pass of gpData.data) {
+        const passId = pass.id;
+        const passName = pass.name || "Gamepass";
+        const price = pass.price;
+        const isForSale = pass.isForSale === true;
+
+        // Creator of the gamepass itself
+        const passCreatorId = pass.creator?.id;
+        const passCreatorType = pass.creator?.type;
+
+        // Only include passes which:
+        // 1) Are for sale
+        // 2) Have a valid positive price
+        // 3) Are created by the SAME USER who owns the game
+        if (
+          isForSale &&
+          typeof price === "number" &&
+          price > 0 &&
+          passCreatorType === "User" &&
+          passCreatorId === ownerUserId
+        ) {
+          allItems.push({
+            id: passId,
+            name: passName,
+            price: price,
+            type: "gamepass",
+          });
+        }
+      }
+
+      // Pagination
+      if (gpData.nextPageCursor) {
+        cursor = gpData.nextPageCursor;
+        await delay(50); // small delay between paginated requests
+      } else {
+        break;
+      }
+    }
+
+    // STEP 3: De-duplicate and sort
+    const uniqueItems = [];
+    const seen = new Set();
+
+    for (const item of allItems) {
+      const key = `${item.type}_${item.id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        uniqueItems.push(item);
+      }
+    }
+
+    uniqueItems.sort((a, b) => a.price - b.price);
+
+    console.log(
+      `Found ${uniqueItems.length} valid gamepasses for universe ${universeId} (owned by user ${ownerUserId}).`
+    );
+
+    res.json({
+      success: true,
+      items: uniqueItems,
+      count: uniqueItems.length,
+      universeId: universeId,
+      ownerUserId: ownerUserId,
+    });
+  } catch (error) {
+    console.error("Error in game donations endpoint:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch donation items for game" });
+  }
+});
+
+// Debug endpoint – shows raw gamepass API response (user-based)
 app.get("/debug/:userId", async (req, res) => {
   const url = `https://apis.roproxy.com/game-passes/v1/users/${req.params.userId}/game-passes?count=100`;
   try {
