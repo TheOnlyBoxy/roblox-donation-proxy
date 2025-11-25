@@ -70,7 +70,9 @@ app.get("/userinfo/:userId", async (req, res) => {
 });
 
 // ============================================
-// DONATIONS BY USER (YOUR ORIGINAL ENDPOINT)
+// DONATIONS BY USER (LOOSENED FILTERS)
+// Uses: https://apis.roproxy.com/game-passes/v1/users/{userId}/game-passes
+// Only requires: isForSale === true and price > 0
 // ============================================
 app.get("/donations/:userId", async (req, res) => {
   try {
@@ -105,20 +107,15 @@ app.get("/donations/:userId", async (req, res) => {
             const price = pass.price;
             const isForSale = pass.isForSale === true;
 
-            const creatorId = pass.creator?.creatorId;
-            const creatorType = pass.creator?.creatorType;
-
-            // Only include passes actually created by this user
-            if (creatorId !== userId || creatorType !== "User") {
-              continue;
-            }
-
+            // LOOSENED: do NOT filter by creatorId/creatorType.
+            // Just require it to be for sale with a positive price.
             if (isForSale && typeof price === "number" && price > 0) {
               allItems.push({
                 id: passId,
                 name: passName,
                 price: price,
                 type: "gamepass",
+                creator: pass.creator, // kept for debugging
               });
             }
           }
@@ -132,6 +129,7 @@ app.get("/donations/:userId", async (req, res) => {
       console.error("Error fetching gamepasses:", err.message);
     }
 
+    // De-duplicate and sort
     const uniqueItems = [];
     const seen = new Set();
     for (const item of allItems) {
@@ -157,160 +155,10 @@ app.get("/donations/:userId", async (req, res) => {
 });
 
 // ============================================
-// DONATIONS BY GAME (UNIVERSE) ID
-// Loosened filters: only require isForSale + price > 0
+// DEBUG ENDPOINT – raw user gamepasses
 // ============================================
-app.get("/donations/game/:universeId", async (req, res) => {
-  const universeId = req.params.universeId;
-
-  try {
-    console.log(`\n=== Fetching donations for universe ${universeId} ===`);
-
-    // STEP 1: Fetch game info (universe) to log creator, but don't filter on it yet
-    const gameInfoUrl = `https://games.roproxy.com/v1/games?universeIds=${universeId}`;
-    console.log("Fetching game info:", gameInfoUrl);
-
-    const gameInfoRes = await fetch(gameInfoUrl);
-    const gameInfoText = await gameInfoRes.text();
-    console.log("Raw game info response:", gameInfoText);
-
-    if (!gameInfoRes.ok) {
-      return res.status(500).json({
-        success: false,
-        error: `Failed to fetch game info: ${gameInfoRes.status} ${gameInfoRes.statusText}`,
-      });
-    }
-
-    let gameInfo;
-    try {
-      gameInfo = JSON.parse(gameInfoText);
-    } catch (e) {
-      console.error("Failed to parse game info JSON:", e.message);
-      return res.status(500).json({
-        success: false,
-        error: "Invalid JSON returned from game info API",
-      });
-    }
-
-    if (!Array.isArray(gameInfo.data) || gameInfo.data.length === 0) {
-      return res.json({ success: false, error: "Game (universe) not found" });
-    }
-
-    const game = gameInfo.data[0];
-    const creator = game.creator; // might be User or Group
-    console.log("Game creator:", creator);
-
-    // STEP 2: Get all gamepasses for this universe (with pagination)
-    let allItems = [];
-    let cursor = null;
-
-    while (true) {
-      const params = new URLSearchParams({ limit: "100" });
-      if (cursor) params.set("cursor", cursor);
-
-      const gamePassesUrl = `https://games.roproxy.com/v1/games/${universeId}/game-passes?${params.toString()}`;
-      console.log("Fetching gamepasses for game:", gamePassesUrl);
-
-      const gpRes = await fetch(gamePassesUrl);
-      const gpText = await gpRes.text();
-      console.log("Raw gamepasses response:", gpText);
-
-      if (!gpRes.ok) {
-        console.error("Failed to fetch gamepasses:", gpRes.status, gpRes.statusText);
-        break;
-      }
-
-      let gpData;
-      try {
-        gpData = JSON.parse(gpText);
-      } catch (e) {
-        console.error("Failed to parse gamepasses JSON:", e.message);
-        break;
-      }
-
-      if (!Array.isArray(gpData.data)) {
-        console.log("No gamepasses 'data' array in response.");
-        break;
-      }
-
-      for (const pass of gpData.data) {
-        const passId = pass.id;
-        const passName = pass.name || "Gamepass";
-        const price = pass.price;
-        const isForSale = pass.isForSale === true;
-
-        // TEMP: only require for-sale and positive price.
-        if (isForSale && typeof price === "number" && price > 0) {
-          allItems.push({
-            id: passId,
-            name: passName,
-            price: price,
-            type: "gamepass",
-            // include creator info for debugging
-            creator: pass.creator,
-          });
-        }
-      }
-
-      if (gpData.nextPageCursor) {
-        cursor = gpData.nextPageCursor;
-        await delay(50);
-      } else {
-        break;
-      }
-    }
-
-    // STEP 3: De-duplicate and sort
-    const uniqueItems = [];
-    const seen = new Set();
-
-    for (const item of allItems) {
-      const key = `${item.type}_${item.id}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        uniqueItems.push(item);
-      }
-    }
-
-    uniqueItems.sort((a, b) => a.price - b.price);
-
-    console.log(
-      `Found ${uniqueItems.length} valid gamepasses for universe ${universeId}.`
-    );
-
-    res.json({
-      success: true,
-      items: uniqueItems,
-      count: uniqueItems.length,
-      universeId: universeId,
-      gameCreator: creator,
-    });
-  } catch (error) {
-    console.error("Error in game donations endpoint:", error);
-    res.status(500).json({ success: false, error: "Failed to fetch donation items for game" });
-  }
-});
-
-// ============================================
-// DEBUG ENDPOINTS
-// ============================================
-
-// Debug endpoint – shows raw gamepass API response (user-based)
 app.get("/debug/:userId", async (req, res) => {
   const url = `https://apis.roproxy.com/game-passes/v1/users/${req.params.userId}/game-passes?count=100`;
-  try {
-    const r = await fetch(url);
-    const text = await r.text();
-    res.send(`Status: ${r.status}\nURL: ${url}\nBody:\n${text}`);
-  } catch (e) {
-    res.send(`Error: ${e.message}`);
-  }
-});
-
-// Debug endpoint – shows raw gamepasses for a universe (game)
-app.get("/debug/game/:universeId", async (req, res) => {
-  const universeId = req.params.universeId;
-  const url = `https://games.roproxy.com/v1/games/${universeId}/game-passes?limit=100`;
   try {
     const r = await fetch(url);
     const text = await r.text();
