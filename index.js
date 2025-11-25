@@ -70,16 +70,20 @@ app.get("/userinfo/:userId", async (req, res) => {
 });
 
 // ============================================
-// DONATIONS BY USER (LOOSENED FILTERS)
-// Uses: https://apis.roproxy.com/game-passes/v1/users/{userId}/game-passes
-// Only requires: isForSale === true and price > 0
+// DONATIONS BY USER – ONLY PASSES CREATED BY THIS USER
+// Uses https://apis.roproxy.com/game-passes/v1/users/{userId}/game-passes
+// Filters to:
+//  - isForSale === true
+//  - price > 0
+//  - creatorType === "User"
+//  - creatorId === userId
 // ============================================
 app.get("/donations/:userId", async (req, res) => {
   try {
     const userId = parseInt(req.params.userId, 10);
     let allItems = [];
 
-    console.log(`\n=== Fetching donations for user ${userId} ===`);
+    console.log(`\n=== Fetching donations (created passes) for user ${userId} ===`);
 
     try {
       const url = `https://apis.roproxy.com/game-passes/v1/users/${userId}/game-passes?count=100`;
@@ -107,15 +111,25 @@ app.get("/donations/:userId", async (req, res) => {
             const price = pass.price;
             const isForSale = pass.isForSale === true;
 
-            // LOOSENED: do NOT filter by creatorId/creatorType.
-            // Just require it to be for sale with a positive price.
-            if (isForSale && typeof price === "number" && price > 0) {
+            const creatorId = pass.creator?.creatorId;
+            const creatorType = pass.creator?.creatorType;
+
+            // Only include passes:
+            // - created by THIS user
+            // - creatorType "User"
+            // - for sale with positive price
+            if (
+              creatorType === "User" &&
+              creatorId === userId &&
+              isForSale &&
+              typeof price === "number" &&
+              price > 0
+            ) {
               allItems.push({
                 id: passId,
                 name: passName,
                 price: price,
                 type: "gamepass",
-                creator: pass.creator, // kept for debugging
               });
             }
           }
@@ -141,7 +155,7 @@ app.get("/donations/:userId", async (req, res) => {
     }
 
     uniqueItems.sort((a, b) => a.price - b.price);
-    console.log(`Found ${uniqueItems.length} valid items for user ${userId}.`);
+    console.log(`Found ${uniqueItems.length} created + for-sale items for user ${userId}.`);
 
     res.json({
       success: true,
@@ -155,7 +169,7 @@ app.get("/donations/:userId", async (req, res) => {
 });
 
 // ============================================
-// DEBUG ENDPOINT – raw user gamepasses
+// DEBUG – raw user gamepasses
 // ============================================
 app.get("/debug/:userId", async (req, res) => {
   const url = `https://apis.roproxy.com/game-passes/v1/users/${req.params.userId}/game-passes?count=100`;
