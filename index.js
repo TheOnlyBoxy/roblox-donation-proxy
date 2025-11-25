@@ -6,86 +6,99 @@ const PORT = process.env.PORT || 3000;
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-const baseUrl = "https://www.roproxy.com/users/inventory/list-json?assetTypeId=34&cursor=&itemsPerPage=100&pageNumber=%s&userId=%s";
+// Optional: avoid very long hanging requests
+app.use((req, res, next) => {
+  res.setTimeout(120000); // 2 minutes
+  next();
+});
 
-// Recursive function to get all gamepasses (matching the Lua script pattern)
-async function getUserCreatedGamepassesRecursive(userId, gamepasses = [], pageNumber = 1, lastLength = Infinity) {
-  const requestUrl = baseUrl.replace('%s', pageNumber).replace('%s', userId);
-  
-  try {
-    const response = await fetch(requestUrl);
-    
-    if (!response.ok) {
-      console.log(`Request failed with status: ${response.status}`);
-      return gamepasses;
-    }
-    
+// Get gamepasses created by a specific user using catalog search
+async function getUserGamepasses(userId, maxToFetch = 100) {
+  const allIds = [];
+  let cursor = '';
+  let keepGoing = true;
+
+  while (keepGoing && allIds.length < maxToFetch) {
+    const url =
+      `https://catalog.roproxy.com/v1/search/items` +
+      `?category=GamePass&creatorType=User&creatorId=${userId}` +
+      `&limit=30&cursor=${encodeURIComponent(cursor)}`;
+
+    console.log("Requesting catalog page:", url);
+
+    const response = await fetch(url);
     const text = await response.text();
-    
-    if (!text) {
-      return gamepasses;
+
+    if (!response.ok) {
+      console.log("Catalog fetch failed:", response.status, text.slice(0, 200));
+      break;
     }
-    
+
     let data;
     try {
       data = JSON.parse(text);
     } catch (e) {
-      console.log("Failed to parse JSON:", e.message);
-      return gamepasses;
+      console.log("Failed to parse catalog JSON:", e.message);
+      break;
     }
-    
-    if (!data || !data.Data || !Array.isArray(data.Data.Items)) {
-      return gamepasses;
+
+    if (!data || !Array.isArray(data.data)) {
+      console.log("No data.data array in catalog response");
+      break;
     }
-    
-    const items = data.Data.Items;
-    console.log(`Page ${pageNumber}: Found ${items.length} items`);
-    
-    // Filter and add gamepasses created by this user (matching Lua logic)
-    for (const gamepass of items) {
-      if (gamepass.Creator && gamepass.Creator.Id === userId) {
-        gamepasses.push(gamepass.Item.AssetId);
+
+    for (const item of data.data) {
+      // Just in case, ensure it’s a gamepass and belongs to this user
+      if (item.itemType === 'GamePass' &&
+          item.creatorType === 'User' &&
+          item.creatorTargetId === userId
+      ) {
+        allIds.push({
+          id: item.id,
+          name: item.name || 'Gamepass'
+        });
       }
     }
-    
-    // Recursive call if there are more items (matching Lua pattern)
-    if (items.length > 0 && items.length >= lastLength) {
-      await delay(100); // Rate limiting
-      return getUserCreatedGamepassesRecursive(userId, gamepasses, pageNumber + 1, items.length);
+
+    console.log(`Collected ${allIds.length} gamepass IDs so far`);
+
+    if (!data.nextPageCursor) {
+      keepGoing = false;
+    } else {
+      cursor = data.nextPageCursor;
+      await delay(100);
     }
-    
-    return gamepasses;
-    
-  } catch (err) {
-    console.log("Error fetching gamepasses:", err.message);
-    return gamepasses;
   }
+
+  return allIds;
 }
 
-// Function to get gamepass details (price, name, etc.)
-async function getGamepassDetails(assetId) {
+// Get product details (price, isForSale, final name)
+async function getGamepassDetails(assetId, fallbackName = 'Gamepass') {
   try {
     const productRes = await fetch(
       `https://api.roproxy.com/marketplace/productinfo?assetId=${assetId}`
     );
-    
+    const text = await productRes.text();
+
     if (!productRes.ok) {
+      console.log(`productinfo failed for ${assetId}:`, productRes.status, text.slice(0, 200));
       return null;
     }
-    
-    const productData = await productRes.json();
+
+    const productData = JSON.parse(text);
     const price = productData.PriceInRobux;
     const isForSale = productData.IsForSale;
-    
+
     if (isForSale && typeof price === 'number' && price > 0) {
       return {
         id: assetId,
-        name: productData.Name || "Gamepass",
+        name: productData.Name || fallbackName,
         price: price,
         type: 'gamepass'
       };
     }
-    
+
     return null;
   } catch (err) {
     console.log("Error fetching details for", assetId, ":", err.message);
@@ -102,34 +115,29 @@ app.get('/donations/:userId', async (req, res) => {
     return res.json({ success: false, error: 'Invalid userId', items: [] });
   }
 
-  console.log(`Fetching gamepasses for userId: ${userId}`);
+  console.log(`Fetching donations for userId: ${userId}, limit: ${limit}`);
 
   try {
-    // Step 1: Get all gamepass IDs created by user (using the Lua script method)
-    const gamepassIds = await getUserCreatedGamepassesRecursive(userId);
-    
-    console.log(`Found ${gamepassIds.length} gamepasses created by user ${userId}`);
-    
-    // Step 2: Get details for each gamepass
-    const allItems = [];
-    
-    for (const assetId of gamepassIds) {
-      if (allItems.length >= limit) break;
-      
-      const details = await getGamepassDetails(assetId);
-      
+    // Step 1: get gamepass IDs created by this user
+    const ids = await getUserGamepasses(userId, limit * 3); // overfetch a bit
+    console.log(`Found ${ids.length} gamepasses in catalog for user ${userId}`);
+
+    // Step 2: get details & filter by for-sale + price > 0
+    const items = [];
+    for (const { id: assetId, name } of ids) {
+      if (items.length >= limit) break;
+      const details = await getGamepassDetails(assetId, name);
       if (details) {
-        allItems.push(details);
+        items.push(details);
       }
-      
-      await delay(50); // Rate limiting
+      await delay(50);
     }
 
-    console.log(`Returning ${allItems.length} items for user ${userId}`);
-    res.json({ success: true, items: allItems });
+    console.log(`Returning ${items.length} items for user ${userId}`);
+    res.json({ success: true, items });
 
   } catch (err) {
-    console.error("Error:", err.message);
+    console.error("Error in /donations:", err.message);
     res.json({ success: false, error: err.message, items: [] });
   }
 });
